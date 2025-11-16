@@ -49,9 +49,9 @@ fi
 
 # ---------------- USER SETTINGS ---------------------------------------------
 
-SS_SERVER="SS_SERVER_IP"
-SS_PORT="SS_SERVER_PORT"
-SS_PASSWORD="SS_SERVER_PASSWORD"
+SS_SERVER="3.80.130.31"
+SS_PORT="8389"
+SS_PASSWORD="rHg8MtMtyTF"
 SS_METHOD="chacha20-ietf-poly1305"
 
 # Local ports on the router
