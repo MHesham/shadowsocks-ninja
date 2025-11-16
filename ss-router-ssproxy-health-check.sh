@@ -3,11 +3,10 @@
 # Shadowsocks "ssproxy" Router Health & Diagnostics (GL / OpenWrt)
 #
 # This script is READ-ONLY: it does NOT change config, it only inspects:
-#  - Binaries & packages (ss-redir, ss-tunnel, ssproxy service)
-#  - Shadowsocks JSON config (/etc/shadowsocks-libev/awssrv.json)
+#  - Binaries & service (ss-redir, ss-tunnel, ssproxy)
 #  - dnsmasq integration (DNS -> 127.0.0.1#8054)
 #  - Processes & listening ports (ss-redir, ss-tunnel)
-#  - TPROXY routing (ip rule fwmark 0x1, table 100 local route + ip route get test)
+#  - TPROXY routing (ip rule fwmark 0x1, table 100 + ip route get test)
 #  - iptables hooks (SHADOWSOCKS in mangle/nat PREROUTING)
 #  - DNS tunnel behavior (dig whoami.cloudflare via 127.0.0.1#8054)
 #  - Optional external IP check (if curl/wget is available)
@@ -22,7 +21,6 @@
 #
 # Adjust these if needed:
 
-SS_CONFIG="/etc/shadowsocks-libev/awssrv.json"
 SS_WORKERS_EXPECTED="2"       # expected ss-redir worker count (per config script)
 DNS_TEST_DOMAIN="example.com" # used only as fallback if dig is missing
 EXPECTED_EGRESS_IP=""         # optional (e.g. "3.80.130.31"); leave empty to skip strict compare
@@ -90,54 +88,6 @@ check_binaries() {
   else
     warn "No /etc/rc.d/*ssproxy* symlink found; ssproxy may not start at boot."
     mark_fail
-  fi
-}
-
-parse_ss_config() {
-  SS_SERVER=""
-  SS_PORT=""
-  SS_METHOD=""
-  SS_PASSWORD=""
-
-  if [ -f "$SS_CONFIG" ]; then
-    SS_SERVER=$(grep -m1 '"server"' "$SS_CONFIG" 2>/dev/null | sed 's/.*: *"//;s/".*//') || true
-    SS_PORT=$(grep -m1 '"server_port"' "$SS_CONFIG" 2>/dev/null | sed 's/.*: *//;s/,.*//') || true
-    SS_METHOD=$(grep -m1 '"method"' "$SS_CONFIG" 2>/dev/null | sed 's/.*: *"//;s/".*//') || true
-    SS_PASSWORD=$(grep -m1 '"password"' "$SS_CONFIG" 2>/dev/null | sed 's/.*: *"//;s/".*//') || true
-  fi
-}
-
-check_ss_config() {
-  say "Shadowsocks JSON config"
-
-  if [ ! -f "$SS_CONFIG" ]; then
-    warn "Config file $SS_CONFIG does NOT exist."
-    mark_fail
-    return
-  fi
-
-  ok "Config file $SS_CONFIG exists."
-  parse_ss_config
-
-  printf "    server:       %s\n" "${SS_SERVER:-<unset>}"
-  printf "    server_port:  %s\n" "${SS_PORT:-<unset>}"
-  printf "    method:       %s\n" "${SS_METHOD:-<unset>}"
-  printf "    password:     %s\n" "${SS_PASSWORD:+<hidden>}"
-
-  if [ -z "$SS_SERVER" ] || [ -z "$SS_PORT" ]; then
-    warn "Could not parse server/server_port from $SS_CONFIG."
-    mark_fail
-    return
-  fi
-
-  # basic reachability hint (not hard-fail)
-  if command -v ping >/dev/null 2>&1; then
-    if ping -c 1 -W 2 "$SS_SERVER" >/dev/null 2>&1; then
-      ok "Ping to Shadowsocks server $SS_SERVER succeeded (basic reachability)."
-    else
-      warn "Ping to Shadowsocks server $SS_SERVER FAILED (may still be reachable via TCP only)."
-      # don't fail hard here; DNS/TPROXY checks are stronger
-    fi
   fi
 }
 
@@ -384,7 +334,6 @@ collect_logs() {
 
 check_root
 check_binaries
-check_ss_config
 check_dnsmasq
 check_processes_and_ports
 check_tproxy_routing
