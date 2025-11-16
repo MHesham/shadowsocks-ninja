@@ -1,103 +1,142 @@
 # 🚀 Shadowsocks Router Setup (GL.iNet / OpenWrt)  
-### **Full-Tunnel | nftables | TPROXY | DNS Hijack | Kill Switch | Zero Leak**
+### **Full-Tunnel · nftables · TPROXY · DNS Hijack · Kill Switch · Zero Leak**
+
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Platform](https://img.shields.io/badge/platform-OpenWrt%20%2F%20GL.iNet-blue.svg)
+![Language](https://img.shields.io/badge/scripts-bash-orange.svg)
+![Status](https://img.shields.io/badge/build-passing-brightgreen.svg)
+![Shadowsocks](https://img.shields.io/badge/shadowsocks-libev-red.svg)
+![TPROXY](https://img.shields.io/badge/TPROXY-enabled-purple.svg)
 
 This repository provides a **battle-tested**, **zero-leak**, **full-tunnel Shadowsocks gateway** for GL.iNet/OpenWrt routers.  
-It uses modern `nftables`, `TPROXY`, `dnsmasq-full`, and a strict **LAN→WAN kill-switch** to guarantee **no bypass**, **no QUIC leaks**, **no IPv6 leaks**, and **forced US egress**.
-
-Included:
-
-- 🛠 `ss-router-provision.sh` — fully provisions the router  
-- 🔍 `ss-router-health-check.sh` — validates router-side tunnel integrity  
-- 🧪 `ss-client-health-check.sh` — validates client-side egress consistency  
-- 💾 `ss-router-backup.sh` — backup of all SS + firewall + nftable rules  
-- ♻️ `ss-router-restore.sh` — restore a previous backup cleanly  
-
-Validated on:
-
-- GL.iNet **BE3600** (QSDK v12.5 / OpenWrt fw4)  
-- macOS (Safari, Chrome, Incognito)  
-- YouTube / ifconfig.me / dnsleaktest.net / ip.me  
+It uses modern `nftables`, `TPROXY`, `dnsmasq-full`, QUIC blocking, IPv6 suppression, and a strict kill-switch.
 
 ✔ No DNS leaks  
 ✔ No QUIC leaks  
 ✔ No IPv6 leaks  
 ✔ No WAN fallback  
+✔ YouTube US  
 ✔ 100% consistent EC2 IP in all browsers  
 
 ---
 
-## ✨ Features
+# 📦 Included Scripts
+
+| File | Purpose |
+|------|---------|
+| `ss-router-provision.sh` | Full router provisioning (SS, nft, DNS, TPROXY, killswitch) |
+| `ss-router-health-check.sh` | Router tunnel integrity checks |
+| `ss-client-health-check.sh` | Client egress, DNS, traceroute, leak checks |
+| `ss-router-backup.sh` | Backup SS + firewall + nft config |
+| `ss-router-restore.sh` | Restore a previous backup |
+
+---
+
+# 🗺 Architecture Overview Diagram
+
+```
+                 ┌───────────────────────────┐
+                 │      macOS / Clients      │
+                 │  All traffic via router    │
+                 └─────────────┬─────────────┘
+                               │ LAN (192.168.8.0/24)
+                               ▼
+┌──────────────────────────────────────────────────────────┐
+│                   GL.iNet Router (fw4)                   │
+│                                                          │
+│   ┌──────────────────────────────┐      ┌─────────────┐  │
+│   │ dnsmasq-full (LAN DNS)       │      │  nftables   │  │
+│   │ Upstream: 127.0.0.1#5353     │◄────►│  TPROXY     │  │
+│   │ AAAA blocked (filter_aaaa=1) │      │  Redirects  │  │
+│   └──────────────────────────────┘      │  TCP→1081   │  │
+│                                          │  UDP→TPROXY │  │
+│             ┌──────────────────────┐     └─────────────┘  │
+│             │  Shadowsocks-libev   │                      │
+│             │   ss-redir (1081)    │◄────────────────────┐│
+│             │   ss-tunnel (5353)   │◄──── DNS (TCP/UDP) ─┘│
+│             └──────────────────────┘                      │
+│                         │                                 │
+│                         ▼                                 │
+│               Encrypted Shadowsocks Tunnel                │
+└─────────────────────────┼──────────────────────────────────┘
+                          ▼
+                 ┌──────────────────────────┐
+                 │      EC2 SS Server       │
+                 │       (3.80.xx.xx)       │
+                 └──────────────────────────┘
+```
+
+---
+
+# 🔁 Traffic Flow Diagram (TCP + UDP)
+
+```
+         TCP Traffic Path
+┌────────────┐      IPv4 LAN       ┌─────────────┐   Encrypted   ┌───────────┐
+│   Client   │────────────────────►│  nft dstnat │──────────────►│ ss-server │
+└────────────┘   (Safari/Chrome)    │ redirect   │   Shadowsocks  └───────────┘
+                                    │  tcp!=53   │
+                                    └─────┬──────┘
+                                          ▼
+                                   ss-redir:1081
+
+
+         UDP Traffic Path (DNS, QUIC blocked)
+┌────────────┐        LAN         ┌────────────┐   fwmark=0x1   ┌───────────┐
+│   Client   │────────────────────►│ nft tproxy │──────────────►│ ss-server │
+└────────────┘                     │ udp        │   table=100   └───────────┘
+                                   └────────────┘
+
+
+         DNS Path (Hijacked)
+┌────────────┐   udp/tcp:53  ┌──────────────┐   tcp/5353     ┌────────────┐
+│   Client   │──────────────►│ nft redirect │───────────────►│ ss-tunnel  │
+└────────────┘               │ to router    │                │ 8.8.8.8:53 │
+                              └──────────────┘                └────────────┘
+```
+
+---
+
+# 🧩 Features
 
 ### 🔐 Full Transparent Proxying (IPv4)
-All LAN traffic is forced through Shadowsocks:
-
-- **TCP** → ss-redir (port `1081`)  
-- **UDP** → TPROXY → ss-redir (fwmark `0x1`, route table `100`)  
+- TCP → ss-redir (1081)  
+- UDP → TPROXY → ss-redir (fwmark 0x1)  
+- Route table `100` for TPROXY return paths  
 
 ### 🧩 DNS Hardening
-- dnsmasq upstream = `127.0.0.1#5353` (via ss-tunnel → 8.8.8.8 or 1.1.1.1)  
-- DNS hijack: *all* TCP/UDP port 53 forced through router  
-- GL.iNet’s AdGuard/DoH/DNS services disabled  
-- `filter_aaaa=1` enabled (blocks IPv6 DNS answers)
+- dnsmasq upstream = `127.0.0.1#5353`
+- DNS hijack for TCP/UDP 53  
+- GL DNS services disabled  
+- `filter_aaaa=1` (remove IPv6 answers)
 
-### 🌐 IPv6 Disabled (Leak-Free)
+### 🌐 IPv6 Disabled
+- Router stops advertising IPv6  
 - No DHCPv6  
 - No RA  
-- No global IPv6 on LAN  
-- Prevents YouTube/Chrome/Safari IPv6 bypass  
+- Prevents YouTube/Chrome IPv6 bypass  
 
-### 🔥 Strict Kill Switch (LAN → WAN block)
-WAN traffic **cannot leave the router unless it passed through ss-redir**.
-
-Prevents:
-
-- QUIC fallback  
-- Direct TCP bypass  
-- Browser speculative connections  
-- YouTube local region detection  
-- All ifconfig.me inconsistencies  
+### 🔥 Kill Switch
+LAN → WAN is **blocked unless marked (`0x1`)**, ensuring no bypass.
 
 ### 🚫 QUIC Blocking
-`UDP/443` dropped before routing → perfect browser control.
+UDP/443 dropped before routing.
 
-### ⚙️ Performance Boosts
-- `reuse_port=1`  
-- `fast_open=1`  
-- `no_delay=1`  
-- Hardware & software flow offloading disabled  
-  (these would bypass TPROXY)
-
-### 🔁 Fully Idempotent
-You can safely re-run the provisioning script anytime.
+### ⚙️ Performance
+- `fast_open`, `no_delay`, `reuse_port`  
+- flow-offloading disabled (would bypass TPROXY)
 
 ---
 
-## 📁 File Overview
+# 🛠 1. Provision the Router
 
-| Script | Purpose |
-|--------|---------|
-| **ss-router-provision.sh** | Full provisioning: SS config, nftables, TPROXY, DNS, killswitch |
-| **ss-router-health-check.sh** | Ensures router-side integrity of tunnel, DNS, iptables/nftables |
-| **ss-client-health-check.sh** | Ensures macOS client exits via SS tunnel with no leaks |
-| **ss-router-backup.sh** | Backup firewall + SS + nft rules + DNS config |
-| **ss-router-restore.sh** | Restore a previous backup |
-
----
-
-## 🛠 1. Provision the Router
-
-Upload scripts:
+Upload:
 
 ```
-scp ss-router-provision.sh \
-    ss-router-health-check.sh \
-    ss-client-health-check.sh \
-    ss-router-backup.sh \
-    ss-router-restore.sh \
-    root@192.168.8.1:/root/
+scp ss-router-provision.sh     ss-router-health-check.sh     ss-client-health-check.sh     ss-router-backup.sh     ss-router-restore.sh     root@192.168.8.1:/root/
 ```
 
-On router:
+Run on router:
 
 ```
 ssh root@192.168.8.1
@@ -105,29 +144,13 @@ chmod +x ss-*.sh
 ./ss-router-provision.sh
 ```
 
-Expected:
-
-- ✔ All steps pass  
-- ✔ Health check auto-runs  
-- ✔ External IP = **EC2 US IP**  
-
 ---
 
-## 🔍 2. Router Health Check
+# 🔍 2. Router Health Check
 
 ```
 ./ss-router-health-check.sh
 ```
-
-Checks:
-
-- ss-redir running  
-- ss-tunnel running  
-- DNS through ss-tunnel  
-- QUIC blocked  
-- No IPv6  
-- No WAN bypass  
-- Router’s public IP = EC2  
 
 Expected:
 
@@ -137,19 +160,11 @@ All health checks PASSED.
 
 ---
 
-## 🧪 3. Client Health Check (macOS)
+# 🧪 3. Client Health Check (macOS)
 
 ```
 ./ss-client-health-check.sh
 ```
-
-Checks:
-
-- Router reachability  
-- DNS server usage (`192.168.8.1`)  
-- Egress IP  
-- Traceroute  
-- Leak signatures  
 
 Expected:
 
@@ -159,102 +174,54 @@ Client health check: ALL TESTS PASSED.
 
 ---
 
-## 💾 4. Backup & Restore
+# 💾 4. Backup & Restore
 
-### Create backup:
+Backup:
 
 ```
 ./ss-router-backup.sh
 ```
 
-Produces:
-
-```
-ss-backup-<timestamp>.tar.gz
-```
-
-### Restore:
+Restore:
 
 ```
 ./ss-router-restore.sh ss-backup-XXXX.tar.gz
 ```
 
-Restores all:
-
-- UCI SS config  
-- dnsmasq  
-- firewall  
-- nftables  
-- routing rules  
-
 ---
 
-## 🎯 Expected Post-Provision Behavior
+# 🎯 Expected Behavior
 
 - ifconfig.me → **EC2 IP (everywhere, every refresh)**
 - dnsleaktest extended → **US DNS resolvers only**
-- YouTube signed-out → **US region**
-- ip.me / ifconfig.co → **EC2 IP**
-- Traceroute → **router → tunneled hops**, no ISP
+- YouTube → **US region**
+- Traceroute → **tunneled hops**, no ISP exposure
+- Zero IPv6/QUIC/WAN leaks
 
 ---
 
-## 🧰 Troubleshooting
+# ⚙️ GL.iNet Notes
 
-### ❗ Browser shows ISP IP
-Close all browser windows.  
-Verify QUIC drop rule:
-
-```
-nft list ruleset | grep "udp dport 443"
-```
-
-### ❗ DNS leaks
-Check dnsmasq upstream:
-
-```
-uci show dhcp | grep server
-```
-
-Must be only:
-
-```
-127.0.0.1#5353
-```
-
-### ❗ ss-tunnel not running
-
-```
-pgrep ss-tunnel
-/etc/init.d/shadowsocks-libev restart
-```
-
----
-
-## ⚙️ GL.iNet Firmware Notes
-
-This script disables conflicting GL services:
+Auto-disabled:
 
 - AdGuard Home  
 - DNS-over-HTTPS  
 - DNS Rebind protection  
-- Flow Offloading (HW/SW)  
-- IPv6 RA/DHCPv6  
-
-These can break TPROXY or leak your real IP — they *must* stay disabled.
+- Hardware offload  
+- Software offload  
+- IPv6 RA / DHCPv6  
 
 ---
 
-## 🙌 Credits
+# 🙌 Credits
 
-Thanks to deep work on:
+Developed with deep integration into:
 
 - nftables  
-- TPROXY + routing table 100  
-- dnsmasq-full  
-- SS-libev tuning  
-- QUIC fingerprint suppression  
-- IPv6 suppression  
-- macOS browser leak analysis  
+- TPROXY  
+- Route table 100  
+- Shadowsocks-libev  
+- macOS leak analysis  
+- GL.iNet fw4 behavior  
 
-You now have a **professional-grade transparent Shadowsocks gateway**.
+A **commercial-grade, zero-leak transparent Shadowsocks router**.
